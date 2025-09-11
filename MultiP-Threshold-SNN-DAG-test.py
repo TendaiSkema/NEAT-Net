@@ -1,5 +1,5 @@
 import numpy as np
-from SNN_neat import DAG, plot_dag
+from SNN_Neat.SNN_neat import DAG, plot_dag
 from tqdm import tqdm
 import plotly.graph_objects as go
 import json

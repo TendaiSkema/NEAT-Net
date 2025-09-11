@@ -1,3 +1,14 @@
+# Spiking Neural Network with NEAT-like structure
+# this is a basic implementation of a spiking neural network with NEAT-like structure
+# it supports adding and removing nodes and connections, as well as training with STDP
+# the network is represented as a directed acyclic graph (DAG)
+# the nodes are spiking neurons that can be connected to each other
+# the network can be processed in layers, where each layer is processed in parallel
+# the network can also contain M-layers, which are layers of nodes that are strongly connected to each other, by strongly it means that there is a path from each node to every other node in the layer
+
+
+
+
 import numpy as np
 #from uuid import uuid1
 import plotly.graph_objects as go

@@ -20,6 +20,10 @@ dummy_gen = dummy_uuid_generator()
 def uuid1():
     return next(dummy_gen)
 
+# -------------------
+# Activation Functions
+# -------------------
+
 class Sigmoid:
     def __call__(self, x):
         return 1/(1+np.exp(-x))
@@ -68,12 +72,23 @@ class Linear:
     def derivative(self, x):
         return np.ones_like(x)
 
+class Softmax:
+    def __call__(self, x):
+        e_x = np.exp(x - np.max(x))
+        return e_x / np.sum(e_x)
+
+    def derivative(self, x):
+        return self(x)*(1-self(x))
+
+# -------------------
+# Error Functions
+# -------------------
 class MSE:
     def __call__(self, y, t):
-        return np.sum((y - t)**2)/len(y)
-    
+        diff = y - t
+        return np.mean(diff * diff) 
     def derivative(self, y, t):
-        return - (t - y)
+        return (y - t)
     
 class CrossEntropy:
     def __call__(self, y, t):
@@ -81,84 +96,197 @@ class CrossEntropy:
     
     def derivative(self, y, t):
         return (y-t)/(y*(1-y))
-    
-class Softmax:
-    def __call__(self, x):
-        return np.exp(x)/np.sum(np.exp(x))
-    
-    def derivative(self, x):
-        return self(x)*(1-self(x))
 
+# -------------------
+# Optimizers
+# -------------------
+class Adam:
+    def __init__(self, lr=0.01, beta1=0.9, beta2=0.999, eps=1e-8):
+        self.lr = lr
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.eps = eps
+
+    def update(self, w, b, grad_w, grad_b, state):
+        """
+        w:        Gewichte (Vektor)
+        b:        Bias (Skalar)
+        grad_w:   Gradienten bzgl. Gewichte (Vektor, gleiche Form wie w)
+        grad_b:   Gradienten bzgl. Bias (Skalar)
+        state:    Dict mit mw, vw, mb, vb, t
+        """
+        # unpack
+        mw, vw = state["mw"], state["vw"]
+        mb, vb = state["mb"], state["vb"]
+        t      = state["t"] + 1
+
+        # 1st moment
+        mw = self.beta1 * mw + (1 - self.beta1) * grad_w
+        mb = self.beta1 * mb + (1 - self.beta1) * grad_b
+        # 2nd moment
+        vw = self.beta2 * vw + (1 - self.beta2) * (grad_w ** 2)
+        vb = self.beta2 * vb + (1 - self.beta2) * (grad_b ** 2)
+
+        # bias correction
+        mw_hat = mw / (1 - self.beta1 ** t)
+        mb_hat = mb / (1 - self.beta1 ** t)
+        vw_hat = vw / (1 - self.beta2 ** t)
+        vb_hat = vb / (1 - self.beta2 ** t)
+
+        # parameter update
+        w = w - self.lr * (mw_hat / (np.sqrt(vw_hat) + self.eps))
+        b = b - self.lr * (mb_hat / (np.sqrt(vb_hat) + self.eps))
+
+        # repack
+        state["mw"], state["vw"] = mw, vw
+        state["mb"], state["vb"] = mb, vb
+        state["t"] = t
+        return w, b, state
+
+class SGD:
+    def __init__(self, lr=0.01):
+        self.lr = lr
+
+    def update(self, w, b, grad_w, grad_b, state=None):
+        """
+        w:        Gewichte (np.ndarray)
+        b:        Bias (float)
+        grad_w:   Gradienten für die Gewichte
+        grad_b:   Gradienten für den Bias
+        state:    nur für Kompatibilität, hier unbenutzt
+        """
+        w = w - self.lr * grad_w
+        b = b - self.lr * grad_b
+        return w, b, state
+
+
+
+
+# -------------------
+# Core Classes
+# -------------------
 class Node:
     def __init__(self, id, bias=True, activation_function=LeakyReLU()):
         self.id = id
         self.input_cons = []
-        self.weights = np.array([])
+        self.weights = np.array([], dtype=float)
         self.has_bias = bias
-        self.bias = 0 #np.random.random() if bias else 0  # Small random value if bias
+        self.bias = 0.0
         self.activation_function = activation_function
         self.output_cons = []
-        self.int_val = []
-        self.out_val = []
+        self.int_val = None
+        self.out_val = None
+
+        # Optimizer-States pro Parameter (werden dynamisch mitwachsen)
+        self.opt_state = {
+            "mw": np.zeros(0, dtype=float),  # 1st moment für weights
+            "vw": np.zeros(0, dtype=float),  # 2nd moment für weights
+            "mb": 0.0,                       # 1st moment für bias
+            "vb": 0.0,                       # 2nd moment für bias
+            "t": 0                           # Zeitschritt
+        }
+
+    def _ensure_opt_state_size(self):
+        """Synchronisiere die Länge der Momente mit den Weights."""
+        wlen = self.weights.shape[0]
+        cur = self.opt_state["mw"].shape[0]
+
+        if cur < wlen:
+            add = wlen - cur
+            self.opt_state["mw"] = np.concatenate([self.opt_state["mw"], np.zeros(add)])
+            self.opt_state["vw"] = np.concatenate([self.opt_state["vw"], np.zeros(add)])
+        elif cur > wlen:
+            # Sicherheitsnetz – falls zu viele Momente
+            self.opt_state["mw"] = self.opt_state["mw"][:wlen]
+            self.opt_state["vw"] = self.opt_state["vw"][:wlen]
+
+
 
     def add_input_con(self, id):
         self.input_cons.append(id)
-        wights = list(self.weights)
-        wights.append(np.random.random() * 2 - 1)  # Small random values
-        self.weights = np.array(wights)
+        self.weights = np.append(self.weights, np.random.uniform(-0.1, 0.1))
+        self._ensure_opt_state_size()
+
 
     def add_output_con(self, id):
         self.output_cons.append(id)
 
     def remove_input_con(self, id):
         idx = self.input_cons.index(id)
-        w = list(self.weights)
-        w.pop(idx)
-        self.weights = np.array(w)
-        self.input_cons.remove(id)
+        self.input_cons.pop(idx)
+
+        # Gewicht löschen
+        self.weights = np.delete(self.weights, idx)
+
+        # Nur wenn Momenten-Vektor lang genug ist, löschen
+        if self.opt_state["mw"].shape[0] > idx:
+            self.opt_state["mw"] = np.delete(self.opt_state["mw"], idx)
+            self.opt_state["vw"] = np.delete(self.opt_state["vw"], idx)
+
+        # Synchronisierung erzwingen
+        self._ensure_opt_state_size()
+
 
     def remove_output_con(self, id):
         self.output_cons.remove(id)
 
     def set_internal_value(self, val):
-        self.int_val = val
-        self.out_val = val
+        v = np.asarray(val, dtype=float)
+        self.int_val = v
+        self.out_val = v
 
     def process(self, inputs=[]):
-        if len(inputs):
-            self.int_val = np.dot(inputs, self.weights) + self.bias
-        if self.activation_function:
-            self.out_val = self.activation_function(self.int_val)
-        else:
-            self.out_val = self.int_val
+        if len(inputs): # inputs exist
+            inputs = np.asarray(inputs, dtype=float)        # (batch, n_in)
+            self.int_val = np.dot(inputs, self.weights) + float(self.bias)  # (batch,)
+        # else: self.int_val was set externally (Input Node)
+        self.out_val = self.activation_function(self.int_val) if self.activation_function else self.int_val
 
-    def backprop(self, errors, input_values, lr) -> list:
-        # internal error
-        e_int = errors * self.activation_function.derivative(self.int_val)
+    def backprop(self, errors, input_values, optimizer) -> list:
+        """
+        errors:       (batch,)
+        input_values: (n_inputs, batch) (kommt so aus DAG)
+        optimizer:    Instanz von Adam/SGD mit .update(...)
+        """
+        e = np.asarray(errors, dtype=float)                              # (batch,)
+        act_der = self.activation_function.derivative(self.int_val)      # (batch,)
+        e_int = e * act_der                                              # (batch,)
 
-        # update bias
-        if self.has_bias:
-            self.bias += lr * np.sum(e_int)
-        # update weights and return errors for input nodes
+        # Gradienten über den Batch mitteln
+        b_grad = np.mean(e_int) if self.has_bias else 0.0
+
+        # Gewicht-Gradienten pro eingehender Kante
+        grad_w = np.zeros_like(self.weights, dtype=float)
+        if len(self.input_cons) > 0:
+            X = np.asarray(input_values, dtype=float)        # (n_in, batch)
+            for i in range(len(self.input_cons)):
+                grad_w[i] = np.mean(X[i] * e_int)
+
+        # Optimizer-Update anwenden
+        self._ensure_opt_state_size()
+        self.weights, self.bias, self.opt_state = optimizer.update(
+            self.weights, self.bias, grad_w, b_grad, self.opt_state
+        )
+
+        # Fehler an Vorgänger weitergeben (mit aktuellen Gewichten)
         prop_e = []
-        #print(f"\tUpdating weights: {self.weights}")
         for i, n_id in enumerate(self.input_cons):
-            prop_e.append((n_id, np.dot(e_int, self.weights[i])))
-            self.weights[i] += lr * np.sum(np.dot(input_values[i], e_int))
+            prop_e.append((n_id, e_int * self.weights[i]))   # shape: (batch,)
 
         return prop_e
 
     def reset(self):
-        self.int_val = []
-        self.out_val = []
+        self.int_val = None
+        self.out_val = None
 
     def __str__(self) -> str:
-        return f"Node({self.id}: in: {[str(n) for n in self.input_cons]} out: {[str(n) for n in self.output_cons]})"
+        return f"Node({self.id}: in: {self.input_cons} out: {self.output_cons})"
 
 class DAG: 
-    def __init__(self, nr_inputs, nr_outputs, id='0', do_setup=True, fully_connect=False, 
+    def __init__(self, nr_inputs, nr_outputs, id='0', do_setup=True, floating_outputs=False, fully_connect=False, 
                 error_function=MSE(), 
-                standard_input_activation=None, standard_output_activation=Linear(), standard_hidden_activation=LeakyReLU()
+                standard_input_activation=None, standard_output_activation=Linear(), standard_hidden_activation=ReLU(),
+                optimizer=Adam(lr=0.01)
                 ):
         self.id = id
         self.nodes = []
@@ -169,6 +297,7 @@ class DAG:
         self.nr_outputs = nr_outputs
         self.error_function = error_function
         self.standard_hidden_activation = standard_hidden_activation
+        self.optimizer = optimizer
 
         if do_setup:
             for i in range(nr_inputs):
@@ -185,6 +314,10 @@ class DAG:
                         if node == other_node:
                             continue
                         self.add_connection(node, other_node)
+            elif not floating_outputs:
+                for out_node in self.output_nodes:
+                    in_node = choice(self.input_nodes)
+                    self.add_connection(in_node, out_node)
 
             self.processing_order = self.get_processing_order()
         
@@ -414,32 +547,31 @@ class DAG:
     def cost(self, outputs, targets):
         return self.error_function(np.array(outputs), np.array(targets))
 
-    def backprop(self, outputs, targets, lr): 
+    def backprop(self, outputs, targets):
         error_dict = {}
         cost = self.cost(outputs, targets)
-        # create error for output nodes
+
+        # Fehler für Output-Nodes (MSE-Style)
         for node_id in self.output_nodes:
             node = self.get_node(node_id)
-            error = self.error_function.derivative(node.out_val, np.array(targets)[:, self.output_nodes.index(node.id)])
-            error_dict[node_id] = error
+            tcol = np.array(targets)[:, self.output_nodes.index(node.id)]
+            error_dict[node_id] = node.out_val - tcol   # (batch,)
 
+        # Hidden -> Input
         for layer in reversed(self.processing_order):
             for node_id in layer:
-                # skip input nodes
                 if node_id in self.input_nodes:
                     continue
-                
                 node = self.get_node(node_id)
-                
-                # get the error for the node
                 error = error_dict[node_id]
 
-                # get the input values of the node
+                # Inputs für diesen Node (n_in, batch)
                 input_vals = np.array([self.get_node(n_id).out_val for n_id in node.input_cons])
 
-                # backpropagate the error
-                prop_err = node.backprop(error, input_vals, lr)
-                # add the propagated error to the error dict
+                # Backprop am Node (Optimizer macht das Update)
+                prop_err = node.backprop(error, input_vals, self.optimizer)
+
+                # Fehler sammeln (additiv; bei Bedarf kannst du hier mitteln)
                 for n_id, e in prop_err:
                     if n_id in error_dict:
                         error_dict[n_id] += e
@@ -447,9 +579,8 @@ class DAG:
                         error_dict[n_id] = e
 
         return cost
- 
 
-    def train(self, inputs, targets, epochs=100, lr=0.01, batch_size=None, verbose=False):
+    def train(self, inputs, targets, epochs=100, batch_size=None, verbose=False):
         if verbose:
             print(f"Start Training DAG {self.id} with", epochs, "epochs")
         if batch_size is None:
@@ -470,7 +601,7 @@ class DAG:
                     tar_batch = targets[i * batch_size:(i + 1) * batch_size]
 
                 outputs = self.process(in_batch)
-                loss = self.backprop(outputs, tar_batch, lr)
+                loss = self.backprop(outputs, tar_batch)
                 losses.append(loss)
         return losses
 
@@ -484,8 +615,8 @@ class DAG:
         for node in other.nodes:
             new_node = Node(node.id, bias=node.has_bias, activation_function=node.activation_function)
             new_node.input_cons = node.input_cons.copy()
-            new_node.weights = [0.5 for _ in node.input_cons]
-            new_node.bias = 0.5
+            new_node.weights = np.random.uniform(-0.1, 0.1, size=len(new_node.input_cons))
+            new_node.bias = np.random.uniform(-0.1, 0.1)
             new_node.activation_function = node.activation_function
             new_node.output_cons = node.output_cons.copy()
             new_node.int_val = []
@@ -508,10 +639,12 @@ class DAG:
             con = choice(possible_connections) 
             self.add_connection(con[0], con[1])
 
-        else:
+        elif len(connections) > 0:
             # add node
             con = choice(connections)
             self.add_node(con[0], con[1])
+        else:
+            raise Exception("No possible connections to remove or add node to, impossible state", connections, possible_connections)
 
         self.processing_order = self.get_processing_order()
 
@@ -523,26 +656,39 @@ class DAG:
         return "DAG("+str([str(n) for n in self.input_nodes])+'\n\t'+'\n\t'.join(str(node) for node in self.nodes)+"\n"+str([str(n) for n in self.output_nodes])+")"
 
 class NEAT:
-    def __init__(self, nr_inputs, nr_outputs, population_size=10, error_function=MSE(), output_activation=Linear(), with_fully_connect=False):
+    def __init__(self, 
+                 nr_inputs, 
+                 nr_outputs, 
+                 population_size=10,
+                 max_width=100,
+                 max_depth=10,
+                 error_function=MSE(), 
+                 output_activation=Linear(), 
+                 optimizer=Adam(lr=1e-3), 
+                 with_fully_connect=False):
+        
         self.nr_inputs = nr_inputs
         self.nr_outputs = nr_outputs
         self.population_size = population_size
+        self.max_width = max_width
+        self.max_depth = max_depth
         self.error_function = error_function
+        self.optimizer = optimizer
         self.population = []
         self.start_full_connect = with_fully_connect
         self.output_activation = output_activation
 
     def create_population(self):
         id_generator = dummy_uuid_generator()
-        for _ in tqdm(range(self.population_size)):
-            dag = DAG(self.nr_inputs, self.nr_outputs, id=next(id_generator), fully_connect=self.start_full_connect, error_function=self.error_function, standard_output_activation=self.output_activation)
+        for _ in tqdm(range(self.population_size), desc="Creating population"):
+            dag = DAG(self.nr_inputs, self.nr_outputs, id=next(id_generator), fully_connect=self.start_full_connect, error_function=self.error_function, standard_output_activation=self.output_activation, optimizer=self.optimizer)
             self.population.append(dag)
 
-    def evaluate_population(self, inputs, targets, epochs= 100, lr=0.01, batch_size=32, verbose=False):
+    def evaluate_population(self, inputs, targets, epochs= 100, batch_size=32, verbose=False):
         #print("Evaluating population")
         population_evals = []
         for dag in tqdm(self.population, desc="evaluating DAG's"):
-            losses = dag.train(inputs, targets, epochs, lr, batch_size=batch_size, verbose=verbose)
+            losses = dag.train(inputs=inputs, targets=targets, epochs=epochs, batch_size=batch_size, verbose=verbose)
             population_evals.append([dag.id, losses[-1], losses])
 
         return population_evals
@@ -592,7 +738,7 @@ class NEAT:
             print('-'*150)
             print(f"Generation {i+1}/{generations}")
             # evaluate the population
-            evaluations = self.evaluate_population(inputs, targets, epochs, lr, batch_size=batch_size, verbose=verbose)
+            evaluations = self.evaluate_population(inputs=inputs, targets=targets, epochs=epochs, batch_size=batch_size, verbose=verbose)
             # select the participants
             participants_id, remaining_id = self.select_participants(evaluations)
             # get the best of the generation and save it
@@ -612,8 +758,8 @@ class NEAT:
             self.population = self.evolve(participants_id, remaining_id)
 
         return best_of_generation
-        
-def plot_dag(dag: DAG):
+
+def old_plot_dag(dag: DAG):
     # Convert the DAG to a networkx graph
     G = nx.DiGraph()
     for node in dag.get_nodes():
@@ -728,4 +874,107 @@ def plot_dag(dag: DAG):
                     )
 
     fig.show()
+
+def plot_dag(dag: DAG, plot_values=False):
+    # Sicherstellen, dass processing_order aktuell ist
+    dag.processing_order = dag.get_processing_order()
+
+    # Calculate positions based on layers
+    layer_positions = {}
+    layer_spacing = 2.5   # Horizontal spacing between layers
+    node_spacing = 1.5    # Vertical spacing between nodes in the same layer
+
+    for i, layer in enumerate(dag.processing_order):
+        x_pos = i * layer_spacing
+        y_start = - (len(layer) - 1) * node_spacing / 2  # zentriert die Knoten pro Layer
+        for j, node_id in enumerate(layer):
+            y_pos = y_start + j * node_spacing
+            layer_positions[node_id] = (x_pos, y_pos)
+
+    # Graph konstruieren
+    G = nx.DiGraph()
+    for node in dag.get_nodes():
+        G.add_node(node.id)
+
+    for con in dag.get_connections():
+        G.add_edge(con[0], con[1])
+
+    # Kanten sammeln
+    edge_x, edge_y, annotations = [], [], []
+    for edge in G.edges():
+        if edge[0] in layer_positions and edge[1] in layer_positions:
+            x0, y0 = layer_positions[edge[0]]
+            x1, y1 = layer_positions[edge[1]]
+            edge_x.extend([x0, x1, None])
+            edge_y.extend([y0, y1, None])
+
+            annotations.append(dict(
+                ax=x0, ay=y0, axref='x', ayref='y',
+                x=x1, y=y1, xref='x', yref='y',
+                showarrow=True,
+                arrowhead=2,
+                arrowsize=1.5,
+                arrowwidth=2,
+                arrowcolor='#888'
+            ))
+
+    edge_trace = go.Scatter(
+        x=edge_x, y=edge_y,
+        line=dict(width=2, color='#888'),
+        hoverinfo='none',
+        mode='lines'
+    )
+
+    # Knoten sammeln
+    node_x, node_y, node_color, node_text = [], [], [], []
+    for node in dag.get_nodes():
+        if node.id in layer_positions:
+            x, y = layer_positions[node.id]
+            node_x.append(x)
+            node_y.append(y)
+
+            # Farben für Input/Output/Hidden
+            if node.id in dag.input_nodes:
+                node_color.append('green')
+            elif node.id in dag.output_nodes:
+                node_color.append('red')
+            else:
+                node_color.append('orange')
+
+            desc = f'Node {node.id}'
+            if plot_values:
+                desc += f'<br>Out Val: {node.out_val}'
+            node_text.append(desc)
+
+    node_trace = go.Scatter(
+        x=node_x, y=node_y,
+        mode='markers+text',
+        hoverinfo='text',
+        textposition='top center',
+        marker=dict(
+            showscale=False,
+            color=node_color,
+            size=20,
+            line_width=2
+        ),
+        text=node_text
+    )
+
+    # Plotly Figur erstellen
+    fig = go.Figure(
+        data=[edge_trace, node_trace],
+        layout=go.Layout(
+            title='<br>Network graph of a DAG',
+            titlefont_size=16,
+            showlegend=False,
+            hovermode='closest',
+            margin=dict(b=20, l=5, r=5, t=40),
+            annotations=annotations,
+            xaxis=dict(showgrid=False, zeroline=False),
+            yaxis=dict(showgrid=False, zeroline=False)
+        )
+    )
+
+    fig.show()
+
 
