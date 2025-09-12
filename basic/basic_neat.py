@@ -159,9 +159,6 @@ class SGD:
         b = b - self.lr * grad_b
         return w, b, state
 
-
-
-
 # -------------------
 # Core Classes
 # -------------------
@@ -200,13 +197,10 @@ class Node:
             self.opt_state["mw"] = self.opt_state["mw"][:wlen]
             self.opt_state["vw"] = self.opt_state["vw"][:wlen]
 
-
-
     def add_input_con(self, id):
         self.input_cons.append(id)
         self.weights = np.append(self.weights, np.random.uniform(-0.1, 0.1))
         self._ensure_opt_state_size()
-
 
     def add_output_con(self, id):
         self.output_cons.append(id)
@@ -225,7 +219,6 @@ class Node:
 
         # Synchronisierung erzwingen
         self._ensure_opt_state_size()
-
 
     def remove_output_con(self, id):
         self.output_cons.remove(id)
@@ -283,13 +276,14 @@ class Node:
         return f"Node({self.id}: in: {self.input_cons} out: {self.output_cons})"
 
 class DAG: 
-    def __init__(self, nr_inputs, nr_outputs, id='0', do_setup=True, floating_outputs=False, fully_connect=False, 
+    def __init__(self, nr_inputs: int, nr_outputs: int, id: str = '0', do_setup: bool = True, floating_outputs: bool = False, fully_connect: bool = False, 
                 error_function=MSE(), 
                 standard_input_activation=None, standard_output_activation=Linear(), standard_hidden_activation=ReLU(),
-                optimizer=Adam(lr=0.01)
+                optimizer=Adam(lr=0.01),
+                mutation_rate=1
                 ):
         self.id = id
-        self.nodes = []
+        self.nodes: dict[str, Node] = {}
         self.input_nodes = []
         self.output_nodes = []
         self.processing_order = []
@@ -298,15 +292,18 @@ class DAG:
         self.error_function = error_function
         self.standard_hidden_activation = standard_hidden_activation
         self.optimizer = optimizer
+        self.mutation_rate = mutation_rate
 
         if do_setup:
-            for i in range(nr_inputs):
-                self.nodes.append(Node(uuid1(), activation_function=standard_input_activation))
-                self.input_nodes.append(self.nodes[-1].id)
-            
-            for i in range(nr_outputs):
-                self.nodes.append(Node(uuid1(), activation_function=standard_output_activation))
-                self.output_nodes.append(self.nodes[-1].id)
+            for _ in range(nr_inputs):
+                uid = uuid1()
+                self.nodes[uid] = Node(uid, activation_function=standard_input_activation)
+                self.input_nodes.append(uid)
+
+            for _ in range(nr_outputs):
+                uid = uuid1()
+                self.nodes[uid] = Node(uid, activation_function=standard_output_activation)
+                self.output_nodes.append(uid)
 
             if fully_connect:
                 for node in self.input_nodes:
@@ -322,19 +319,16 @@ class DAG:
             self.processing_order = self.get_processing_order()
         
     def get_node(self, id) -> Node:
-        for node in self.nodes:
-            if node.id == id:
-                return node
-        return None
+        return self.nodes.get(id, None)
     
     def get_nodes(self):
-        return self.nodes
+        return self.get_nodes_as_list()
     
     def get_connections(self) -> list:
         connections = []
-        for node in self.nodes:
+        for id, node in self.nodes.items():
             for con in node.output_cons:
-                connections.append((node.id, con))
+                connections.append((id, con))
         return connections
 
     def does_create_cycle(self, nod1_id, nod2_id) -> bool:
@@ -384,25 +378,25 @@ class DAG:
         - connections that go back in the processing order
         '''
         legal_connections = []
-        for n1 in self.nodes:
-            for n2 in self.nodes:
+        for id1 in self.nodes.keys():
+            for id2 in self.nodes.keys():
                 # if n1 is an output node
-                if n1.id in self.output_nodes:
+                if id1 in self.output_nodes:
                     continue
-                # if n2 isan input node
-                if n2.id in self.input_nodes:
+                # if n2 is an input node
+                if id2 in self.input_nodes:
                     continue
                 # if nodes are the same
-                if n1.id == n2.id:
+                if id1 == id2:
                     continue
                 # if connection is already present
-                if self.is_connected(n1.id, n2.id) or self.is_connected(n2.id, n1.id):
+                if self.is_connected(id1, id2) or self.is_connected(id2, id1):
                     continue
                 # if would create a cycle
-                if self.does_create_cycle(n1.id, n2.id):
+                if self.does_create_cycle(id1, id2):
                     continue
-                
-                legal_connections.append((n1.id, n2.id))
+
+                legal_connections.append((id1, id2))
         return legal_connections
 
     def is_connected(self, nod1_id, nod2_id) -> bool:
@@ -416,7 +410,7 @@ class DAG:
         
         activ_func = activation_function if activation_function else self.standard_hidden_activation
         new_node = Node(uuid1(), activation_function=activ_func)
-        self.nodes.append(new_node)
+        self.nodes[new_node.id] = new_node
         self.remove_connection(node1_id, node2_id)
         self.add_connection(node1_id, new_node.id)
         self.add_connection(new_node.id, node2_id)
@@ -445,16 +439,16 @@ class DAG:
         while len(node.output_cons):
             con  = node.output_cons[0]
             self.remove_connection(node_id, con)
-        self.nodes.remove(node)
+        self.nodes.pop(node_id)
 
     def kill_iteration(self) -> bool:
-        for node in self.nodes:
-            for node in self.nodes:
-                if node.id in self.input_nodes or node.id in self.output_nodes:
-                    continue
-                if len(node.input_cons) == 0 or len(node.output_cons) == 0:
-                    self.remove_node(node.id)
-                    return True
+        for id1, node1 in self.nodes.items():
+            if id1 in self.input_nodes or id1 in self.output_nodes:
+                continue
+            if len(node1.input_cons) == 0 or len(node1.output_cons) == 0:
+                self.remove_node(node1.id)
+                return True
+
         return False
 
     def kill_floaters(self):
@@ -468,7 +462,7 @@ class DAG:
         do a depth first search from each node and see if it can reach any of the already visited nodes
         '''
         visited = set()
-        for node in self.nodes:
+        for node in self.nodes.values():
             stack = [node]
             while stack:
                 n = stack.pop()
@@ -478,71 +472,55 @@ class DAG:
                 for con in n.output_cons:
                     stack.append(self.get_node(con))
         return False
-
-    def get_nodes_as_dict(self):
-        nodes = {}
-        for node in self.nodes:
-            nodes[node.id] = {"input_cons": node.input_cons.copy(), "output_cons": node.output_cons.copy()}
-        return nodes
+    
+    def get_nodes_as_list(self):
+        return list(self.nodes.values())
 
     def get_processing_order(self) -> list:
         processing_order = []
-        nodes = self.get_nodes_as_dict()
-        # while there is still nodes to process
+        # Kopiere nur Strukturen, nicht die echten Objekte
+        nodes = {nid: {"input_cons": n.input_cons.copy(),
+                    "output_cons": n.output_cons.copy()}
+                for nid, n in self.nodes.items()}
+        
         while len(nodes) > 0:
-            # go over all nodes
             new_layer = []
-            for node_id, node in nodes.items():
-                # if node has no input connections
+            for node_id, node in list(nodes.items()):
                 if len(node["input_cons"]) == 0:
-                    # add to layer
                     new_layer.append(node_id)
 
             processing_order.append(new_layer)
-            
-            # remove node from other nodes input connections
+
             for node_id in new_layer:
                 for out in nodes[node_id]["output_cons"]:
                     nodes[out]["input_cons"].remove(node_id)
                 del nodes[node_id]
-            
 
         return processing_order
+
     
     def process(self, inputs, verbose=False):
-        # get the processing order
-        processed_dict = {}
-        # set all inputs to the input nodes
-        inputs = np.array(inputs)
+        processed = {}
+        inputs = np.asarray(inputs, dtype=float)
+
+        # Inputs setzen
         for i, node_id in enumerate(self.input_nodes):
-            node = self.get_node(node_id)
-            node_inputs = inputs[:,i]
+            node = self.nodes[node_id]
+            node.set_internal_value(inputs[:, i])
+            processed[node_id] = node.out_val
 
-            node.set_internal_value(node_inputs)
-            processed_dict[node_id] = node.out_val
-
+        # Rest
         for layer in self.processing_order:
             for node_id in layer:
                 if node_id in self.input_nodes:
                     continue
-                
-                node = self.get_node(node_id)
+                node = self.nodes[node_id]
+                node_inputs = np.column_stack([processed[in_id] for in_id in node.input_cons])
+                node.process(node_inputs)
+                processed[node_id] = node.out_val
 
-                # get all the values that the node has as input that are already processed
-                node_inputs = []
-                for in_node_id in node.input_cons:
-                    new_input = processed_dict[in_node_id]
-                    node_inputs.append(new_input)
+        return np.column_stack([processed[out_id] for out_id in self.output_nodes])
 
-                node_inputs = np.array(node_inputs)
-                
-                # process the node
-                node.process(node_inputs.T)
-                # save the output value
-                processed_dict[node_id] = node.out_val
-                
-        # return the output of the output nodes
-        return np.array([self.get_node(node).out_val for node in self.output_nodes]).T
 
     def cost(self, outputs, targets):
         return self.error_function(np.array(outputs), np.array(targets))
@@ -612,8 +590,8 @@ class DAG:
         this.id = other.id
         this.error_function = other.error_function
         # copy the nodes
-        for node in other.nodes:
-            new_node = Node(node.id, bias=node.has_bias, activation_function=node.activation_function)
+        for id, node in other.nodes.items():
+            new_node = Node(id, bias=node.has_bias, activation_function=node.activation_function)
             new_node.input_cons = node.input_cons.copy()
             new_node.weights = np.random.uniform(-0.1, 0.1, size=len(new_node.input_cons))
             new_node.bias = np.random.uniform(-0.1, 0.1)
@@ -621,7 +599,7 @@ class DAG:
             new_node.output_cons = node.output_cons.copy()
             new_node.int_val = []
             new_node.out_val = []
-            this.nodes.append(new_node)
+            this.nodes[id] = new_node
         # copy the input and output nodes
         this.input_nodes = other.input_nodes.copy()
         this.output_nodes = other.output_nodes.copy()
@@ -629,24 +607,25 @@ class DAG:
         return this
      
     def mutate(self):
-        connections = self.get_connections()
-        possible_connections = self.get_legal_connections()
-        if (rand() < 0.5 or len(connections) == 0) and  len(possible_connections) > 0:
-            # add connection
-            if len(possible_connections) == 0:
-                return
-            
-            con = choice(possible_connections) 
-            self.add_connection(con[0], con[1])
+        for _ in range(self.mutation_rate):
+            connections = self.get_connections()
+            possible_connections = self.get_legal_connections()
+            if (rand() < 0.5 or len(connections) == 0) and  len(possible_connections) > 0:
+                # add connection
+                if len(possible_connections) == 0:
+                    return
+                
+                con = choice(possible_connections) 
+                self.add_connection(con[0], con[1])
 
-        elif len(connections) > 0:
-            # add node
-            con = choice(connections)
-            self.add_node(con[0], con[1])
-        else:
-            raise Exception("No possible connections to remove or add node to, impossible state", connections, possible_connections)
+            elif len(connections) > 0:
+                # add node
+                con = choice(connections)
+                self.add_node(con[0], con[1])
+            else:
+                raise Exception("No possible connections to remove or add node to, impossible state", connections, possible_connections)
 
-        self.processing_order = self.get_processing_order()
+            self.processing_order = self.get_processing_order()
 
     def reset(self):
         for node in self.nodes:
@@ -660,6 +639,7 @@ class NEAT:
                  nr_inputs, 
                  nr_outputs, 
                  population_size=10,
+                 mutation_rate=1,
                  max_width=100,
                  max_depth=10,
                  error_function=MSE(), 
@@ -677,11 +657,18 @@ class NEAT:
         self.population = []
         self.start_full_connect = with_fully_connect
         self.output_activation = output_activation
+        self.mutation_rate = mutation_rate
 
     def create_population(self):
         id_generator = dummy_uuid_generator()
         for _ in tqdm(range(self.population_size), desc="Creating population"):
-            dag = DAG(self.nr_inputs, self.nr_outputs, id=next(id_generator), fully_connect=self.start_full_connect, error_function=self.error_function, standard_output_activation=self.output_activation, optimizer=self.optimizer)
+            dag = DAG(self.nr_inputs, self.nr_outputs, id=next(id_generator), 
+                      fully_connect=self.start_full_connect, 
+                      error_function=self.error_function, 
+                      standard_output_activation=self.output_activation, 
+                      optimizer=self.optimizer, 
+                      mutation_rate=self.mutation_rate
+                      )
             self.population.append(dag)
 
     def evaluate_population(self, inputs, targets, epochs= 100, batch_size=32, verbose=False):
